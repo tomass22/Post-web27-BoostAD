@@ -1,6 +1,7 @@
 # 개요
 
-본 Repo는 boostcamp활동 이후의 개선이나 테스트를 다루는 Repo입니다.
+> [!note]
+> **본 Repo는 boostcamp활동 이후의 개선이나 테스트를 다루는 Repo입니다.**
 
 ---
 
