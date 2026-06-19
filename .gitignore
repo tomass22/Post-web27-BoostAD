@@ -36,3 +36,7 @@ mysql/init/*.sql
 sdk/dist/sdk.js
 backend/public/sdk.js
 
+# 개인 폴더
+pr/
+issue/
+
