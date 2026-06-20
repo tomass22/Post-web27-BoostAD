@@ -2,10 +2,10 @@ name: monitoring-deploy
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - monitoring/**
-      - .github/workflows/monitoring-deploy.yml
+#   push:
+#     paths:
+#       - monitoring/**
+#       - .github/workflows/monitoring-deploy.yml
 
 jobs:
   deploy:

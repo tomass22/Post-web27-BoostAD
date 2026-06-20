@@ -1,9 +1,9 @@
 name: frontend-deploy
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - frontend/**
+#   push:
+#     paths:
+#       - frontend/**
 
 env:
   DEPLOY_BRANCH: ${{ vars.DEPLOY_BRANCH || 'feature/deploy' }}
