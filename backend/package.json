@@ -19,7 +19,8 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "migrate:earnings": "npm run build && node dist/publisher/scripts/migrate-past-earnings-simple.js"
+    "migrate:earnings": "npm run build && node dist/publisher/scripts/migrate-past-earnings-simple.js",
+    "load-test": "node benchmark/load-test.js"
   },
   "dependencies": {
     "@keyv/redis": "^5.1.6",
@@ -66,6 +67,7 @@
     "@types/multer": "^2.0.0",
     "@types/node": "^22.19.3",
     "@types/supertest": "^6.0.2",
+    "autocannon": "^8.0.0",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",

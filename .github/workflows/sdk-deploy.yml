@@ -2,9 +2,9 @@ name: sdk-deploy
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - sdk/**
+#  push:
+#    paths:
+#      - sdk/**
 
 env:
   DEPLOY_BRANCH: ${{ vars.DEPLOY_BRANCH || 'feature/deploy' }}

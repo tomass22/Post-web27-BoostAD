@@ -2,11 +2,11 @@ name: backend-deploy
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - backend/**
-      - nginx/**
-      - docker-compose.prod.yml
+#   push:
+#     paths:
+#       - backend/**
+#       - nginx/**
+#       - docker-compose.prod.yml
 
 env:
   DEPLOY_BRANCH: ${{ vars.DEPLOY_BRANCH || 'feature/deploy' }}
