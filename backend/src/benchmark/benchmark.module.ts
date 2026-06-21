@@ -3,9 +3,10 @@ import { BenchmarkController } from './benchmark.controller';
 import { BenchmarkService } from './benchmark.service';
 import { CampaignModule } from '../campaign/campaign.module';
 import { RTBModule } from '../rtb/rtb.module';
+import { RedisModule } from '../redis/redis.module';
 
 @Module({
-  imports: [CampaignModule, RTBModule],
+  imports: [CampaignModule, RTBModule, RedisModule],
   controllers: [BenchmarkController],
   providers: [BenchmarkService],
 })

@@ -1,6 +1,10 @@
 import { Controller, Get, Query, Logger } from '@nestjs/common';
 import { Public } from '../auth/decorators/public.decorator';
-import { BenchmarkService, BenchmarkSummary } from './benchmark.service';
+import {
+  BenchmarkService,
+  BenchmarkSummary,
+  FetchBenchmarkSummary,
+} from './benchmark.service';
 
 @Controller('benchmark')
 export class BenchmarkController {
@@ -54,6 +58,41 @@ export class BenchmarkController {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         data: null as any,
         message: `벤치마크 실패: ${errorMessage}`,
+      };
+    }
+  }
+
+  /**
+   * GET /benchmark/fetch?iterations=5
+   * 조회 전용 공정 비교 (순수 MySQL vs 순수 Redis vs Redis+앱캐시)
+   */
+  @Public()
+  @Get('fetch')
+  async runFetchBenchmark(
+    @Query('iterations') iterations: string = '5'
+  ): Promise<{
+    success: boolean;
+    data: FetchBenchmarkSummary;
+    message: string;
+  }> {
+    const iterCount = Math.max(1, Math.min(20, parseInt(iterations, 10) || 5));
+
+    try {
+      const result = await this.benchmarkService.runFetchBenchmark(iterCount);
+      return {
+        success: true,
+        data: result,
+        message: `✅ 조회 비교 완료 (${iterCount}회)`,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(`❌ 조회 비교 실패: ${errorMessage}`);
+      return {
+        success: false,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: null as any,
+        message: `조회 비교 실패: ${errorMessage}`,
       };
     }
   }

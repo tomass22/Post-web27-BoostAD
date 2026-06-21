@@ -1,7 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CampaignRepository } from '../campaign/repository/campaign.repository.interface';
 import { CampaignCacheRepository } from '../campaign/repository/campaign.cache.repository.interface';
 import { MLEngine } from '../rtb/ml/mlEngine.interface';
+import { IOREDIS_CLIENT } from '../redis/redis.constant';
+import type { AppIORedisClient } from '../redis/redis.type';
+import type { CachedCampaign } from '../campaign/types/campaign.types';
 import { performance } from 'perf_hooks';
 
 /**
@@ -65,6 +68,29 @@ export interface BenchmarkSummary {
   };
 }
 
+/** 조회 전용 공정 비교의 반복별 측정값 */
+export interface FetchRow {
+  iteration: number;
+  mysqlMs: number;
+  redisRawMs: number;
+  redisCachedMs: number;
+  counts: { mysql: number; redisRaw: number; redisCached: number };
+}
+
+export interface FetchBenchmarkSummary {
+  timestamp: string;
+  iterations: number;
+  campaignCount: number;
+  averages: { mysqlMs: number; redisRawMs: number; redisCachedMs: number };
+  comparison: {
+    /** ①→②: 양수 ms = Redis가 더 빠름, 음수 = Redis가 더 느림 */
+    redisVsMysql: { ms: number; percent: string; verdict: string };
+    /** ②→③: 인메모리 캐싱이 추가로 줄인 시간 */
+    cacheEffect: { ms: number; percent: string };
+  };
+  raw: FetchRow[];
+}
+
 @Injectable()
 export class BenchmarkService {
   private readonly logger = new Logger(BenchmarkService.name);
@@ -78,7 +104,8 @@ export class BenchmarkService {
   constructor(
     private readonly campaignRepository: CampaignRepository,
     private readonly campaignCacheRepository: CampaignCacheRepository,
-    private readonly mlEngine: MLEngine
+    private readonly mlEngine: MLEngine,
+    @Inject(IOREDIS_CLIENT) private readonly ioredisClient: AppIORedisClient
   ) {}
 
   /**
@@ -465,6 +492,132 @@ export class BenchmarkService {
         basis: 'totalMs' as const,
       },
     };
+  }
+
+  /**
+   * 조회 전용 공정 비교: 앱 인메모리 캐시를 우회해 "순수 조회 비용"을 단계별로 잰다.
+   *   ① MySQL        : campaignRepository.getAll() (매번 DB, 앱캐시 없음)
+   *   ② Redis(raw)   : SCAN + JSON.GET 직접 (앱캐시 우회) = 순수 Redis 도입 효과
+   *   ③ Redis+앱캐시 : getAllCampaigns() (10초 인메모리 캐시 히트)
+   *
+   * ①→② = Redis 전환 자체의 조회 속도 변화 (RedisJSON이 빨라졌나/느려졌나)
+   * ②→③ = 인메모리 캐싱 추가 효과
+   */
+  async runFetchBenchmark(
+    iterations: number = 5
+  ): Promise<FetchBenchmarkSummary> {
+    // 워밍업: cold start 제거 + ③의 앱캐시 채우기
+    await this.campaignRepository.getAll();
+    await this.scanAllCampaignsRaw();
+    await this.campaignCacheRepository.getAllCampaigns();
+
+    const rows: FetchRow[] = [];
+    for (let i = 0; i < iterations; i++) {
+      const t1 = performance.now();
+      const mysql = await this.campaignRepository.getAll();
+      const mysqlMs = performance.now() - t1;
+
+      const t2 = performance.now();
+      const redisRaw = await this.scanAllCampaignsRaw();
+      const redisRawMs = performance.now() - t2;
+
+      const t3 = performance.now();
+      const redisCached = await this.campaignCacheRepository.getAllCampaigns();
+      const redisCachedMs = performance.now() - t3;
+
+      rows.push({
+        iteration: i + 1,
+        mysqlMs: round(mysqlMs),
+        redisRawMs: round(redisRawMs),
+        redisCachedMs: round(redisCachedMs),
+        counts: {
+          mysql: mysql.length,
+          redisRaw: redisRaw.length,
+          redisCached: redisCached.length,
+        },
+      });
+    }
+
+    const n = rows.length || 1;
+    const avg = (k: 'mysqlMs' | 'redisRawMs' | 'redisCachedMs') =>
+      round(rows.reduce((s, r) => s + r[k], 0) / n);
+    const avgMysql = avg('mysqlMs');
+    const avgRedisRaw = avg('redisRawMs');
+    const avgRedisCached = avg('redisCachedMs');
+
+    const pct = (gain: number, base: number) =>
+      base > 0 ? `${((gain / base) * 100).toFixed(1)}%` : '0%';
+
+    const redisDeltaMs = round(avgMysql - avgRedisRaw);
+    const cacheDeltaMs = round(avgRedisRaw - avgRedisCached);
+
+    this.logger.log(
+      `📊 조회 비교 — MySQL=${avgMysql}ms, Redis(raw)=${avgRedisRaw}ms, Redis+앱캐시=${avgRedisCached}ms`
+    );
+
+    return {
+      timestamp: new Date().toISOString(),
+      iterations,
+      campaignCount: rows[0]?.counts.mysql ?? 0,
+      averages: {
+        mysqlMs: avgMysql,
+        redisRawMs: avgRedisRaw,
+        redisCachedMs: avgRedisCached,
+      },
+      comparison: {
+        redisVsMysql: {
+          ms: redisDeltaMs,
+          percent: pct(redisDeltaMs, avgMysql),
+          verdict:
+            redisDeltaMs >= 0 ? 'Redis 조회가 더 빠름' : 'Redis 조회가 더 느림',
+        },
+        cacheEffect: {
+          ms: cacheDeltaMs,
+          percent: pct(cacheDeltaMs, avgRedisRaw),
+        },
+      },
+      raw: rows,
+    };
+  }
+
+  /** getAllCampaigns의 실제 Redis 조회 로직을 앱 캐시 없이 재현 (측정 전용) */
+  private async scanAllCampaignsRaw(): Promise<CachedCampaign[]> {
+    const pattern = `campaign:*`;
+    const keys: string[] = [];
+    let cursor = '0';
+    do {
+      const result = await this.ioredisClient.scan(
+        cursor,
+        'MATCH',
+        pattern,
+        'COUNT',
+        100
+      );
+      cursor = result[0];
+      keys.push(...result[1]);
+    } while (cursor !== '0');
+
+    if (keys.length === 0) return [];
+
+    const campaigns: CachedCampaign[] = [];
+    const BATCH_SIZE = 200;
+    for (let i = 0; i < keys.length; i += BATCH_SIZE) {
+      const batchKeys = keys.slice(i, i + BATCH_SIZE);
+      const pipeline = this.ioredisClient.pipeline();
+      batchKeys.forEach((key) => pipeline.call('JSON.GET', key));
+      const results = await pipeline.exec();
+      if (!results) continue;
+      results.forEach(([err, res]) => {
+        if (!err && typeof res === 'string') {
+          try {
+            campaigns.push(JSON.parse(res) as CachedCampaign);
+          } catch {
+            // 파싱 실패 스킵
+          }
+        }
+      });
+    }
+    return campaigns;
   }
 }
 
