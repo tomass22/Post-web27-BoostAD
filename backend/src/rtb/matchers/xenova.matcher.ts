@@ -3,7 +3,10 @@ import { Matcher } from './matcher.interface';
 import { CampaignCacheRepository } from '../../campaign/repository/campaign.cache.repository.interface';
 import { MLEngine } from '../ml/mlEngine.interface';
 import type { Candidate, DecisionContext } from '../types/decision.types';
-import type { CachedCampaign } from '../../campaign/types/campaign.types';
+import type {
+  CachedCampaign,
+  CampaignMatchIndexRow,
+} from '../../campaign/types/campaign.types';
 @Injectable()
 export class TransformerMatcher extends Matcher {
   private readonly logger = new Logger(TransformerMatcher.name);
@@ -53,18 +56,27 @@ export class TransformerMatcher extends Matcher {
     const requestNorm = this.normalizeText(requestText);
     const requestTokens = new Set(this.tokenizeText(requestText));
 
-    // Redis에서 모든 캠페인 조회 (캐시 우선 전략)
-    const allCampaigns = await this.campaignCacheRepo.getAllCampaigns();
+    // 1단계: 매칭 인덱스(Hash)를 HGETALL 1왕복으로 조회 (경량 — 본문/임베딩 미포함)
+    // SCAN + 전체 본문 GET을 제거. (ADR-rtb-cache-lookup.md 3.1)
+    const indexRows = await this.campaignCacheRepo.getMatchIndex();
 
-    // 비딩 자격 필터링: ACTIVE + 날짜 범위 + deletedAt + embeddingTags + isHighIntent 존재
-    // TODO: 처음부터 모든 캠페인 조회 말고 이렇게 필터링된 캠페인만 Redis에서 조회하는 방법도 고려 가능 -> 인덱싱
-    const eligibleCampaigns = this.filterEligibleCampaigns(
-      allCampaigns,
+    // 2단계: 경량 데이터로 자격 필터링 → 통과 후보 id만 추출
+    const eligibleIds = this.filterEligibleMatchIndex(
+      indexRows,
       context.isHighIntent
-    );
+    ).map((row) => row.id);
+
+    if (eligibleIds.length === 0) {
+      this.logger.debug('비딩 가능한 캠페인이 없습니다.');
+      return [];
+    }
+
+    // 3단계: 자격 통과 "생존자"의 본문/임베딩만 pipeline GET (전수가 아님)
+    const eligibleCampaigns =
+      await this.campaignCacheRepo.findManyByIds(eligibleIds);
 
     if (eligibleCampaigns.length === 0) {
-      this.logger.debug('비딩 가능한 캠페인이 없습니다.');
+      this.logger.debug('자격 통과 캠페인 본문 조회 결과가 비었습니다.');
       return [];
     }
 
@@ -96,7 +108,7 @@ export class TransformerMatcher extends Matcher {
     );
 
     this.logger.debug(
-      `필터링된 캠페인 수 ${candidates.length}/${allCampaigns.length} 캠페인의 유사도 (임계값: ${this.SIMILARITY_THRESHOLD})`
+      `필터링된 캠페인 수 ${candidates.length}/${indexRows.length} 캠페인의 유사도 (임계값: ${this.SIMILARITY_THRESHOLD})`
     );
 
     return candidates;
@@ -107,42 +119,41 @@ export class TransformerMatcher extends Matcher {
     return tags.join(' ');
   }
 
-  // 비딩 자격 필터링: ACTIVE + 날짜 범위 + deletedAt + embeddingTags 존재
-  private filterEligibleCampaigns(
-    campaigns: CachedCampaign[],
+  // 비딩 자격 필터링(경량 인덱스 기반): ACTIVE + 날짜 범위 + deletedAt + hasEmbedding + isHighIntent
+  // 기존 filterEligibleCampaigns(본문 기반)와 동일 규칙이며, embeddingTags 존재 여부는
+  // 인덱스에 평탄화된 hasEmbedding으로 판정한다.
+  private filterEligibleMatchIndex(
+    rows: CampaignMatchIndexRow[],
     isHighIntent: boolean
-  ): CachedCampaign[] {
+  ): CampaignMatchIndexRow[] {
     const now = new Date();
 
-    return campaigns.filter((campaign) => {
+    return rows.filter((row) => {
       // 삭제된 캠페인 제외
-      if (campaign.deletedAt) {
+      if (row.deletedAt) {
         return false;
       }
 
       // ACTIVE 상태만 허용
-      if (campaign.status !== 'ACTIVE') {
+      if (row.status !== 'ACTIVE') {
         return false;
       }
 
       // 날짜 범위 검증
-      const startDate = new Date(campaign.startDate);
-      const endDate = new Date(campaign.endDate);
+      const startDate = new Date(row.startDate);
+      const endDate = new Date(row.endDate);
 
       if (now < startDate || now >= endDate) {
         return false;
       }
 
-      // embeddingTags 존재 여부 (임베딩 없으면 유사도 계산 불가)
-      if (
-        !campaign.embeddingTags ||
-        Object.keys(campaign.embeddingTags).length === 0
-      ) {
+      // 임베딩 존재 여부 (없으면 유사도 계산 불가)
+      if (!row.hasEmbedding) {
         return false;
       }
 
-      // isHighIntert가 일치하는지 여부
-      if (isHighIntent !== campaign.isHighIntent) {
+      // isHighIntent가 일치하는지 여부
+      if (isHighIntent !== row.isHighIntent) {
         return false;
       }
 
