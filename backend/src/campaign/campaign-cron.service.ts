@@ -90,6 +90,15 @@ export class CampaignCronService {
   async hourlyReconciliation(): Promise<void> {
     this.logger.log('시간별 정합성 체크 시작');
     await this.reconcileSpentFromClickLog(new Date());
+
+    // 매칭 인덱스 self-healing: 증분 갱신(HSET/HDEL) 누락분을 본문 기준으로 전체 재구축
+    // (정합성 안전장치)
+    try {
+      const count = await this.campaignCacheRepository.rebuildMatchIndex();
+      this.logger.log(`매칭 인덱스 재구축 완료: ${count}개`);
+    } catch (error) {
+      this.logger.warn('매칭 인덱스 재구축 실패 (다음 주기에 재시도)', error);
+    }
   }
 
   // ========================================

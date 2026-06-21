@@ -74,3 +74,21 @@ export type CachedCampaignWithoutSpent = Omit<
   CachedCampaign,
   'dailySpent' | 'totalSpent'
 >;
+
+/**
+ * 매칭 인덱스(campaign:match-index Hash)의 field 값.
+ * 1단계 자격 필터(filterEligibleCampaigns)에 필요한 경량 필드만 담는다.
+ * 본문/예산/임베딩 벡터는 제외 — 임베딩은 존재 여부(hasEmbedding)만 평탄화해 보관.
+ * (ADR-rtb-cache-lookup.md 3.1)
+ */
+export type CampaignMatchIndexEntry = {
+  status: CampaignStatus;
+  isHighIntent: boolean;
+  deletedAt: string | null;
+  startDate: string;
+  endDate: string;
+  hasEmbedding: boolean;
+};
+
+/** 매칭 인덱스 엔트리 + 캠페인 id */
+export type CampaignMatchIndexRow = CampaignMatchIndexEntry & { id: string };
