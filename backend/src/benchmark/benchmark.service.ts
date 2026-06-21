@@ -719,6 +719,20 @@ export class BenchmarkService {
     return campaigns;
   }
 
+  /**
+   * 매칭 인덱스 수동 재구축 (ops 유틸).
+   * 부팅 직후 임베딩이 아직 안 올라온 상태에서 인덱스가 stale할 때 즉시 보정용.
+   * (정기 보정은 hourlyReconciliation cron이 수행)
+   */
+  async rebuildMatchIndex(): Promise<{ rebuilt: number; withEmbedding: number }> {
+    const rebuilt = await this.campaignCacheRepository.rebuildMatchIndex();
+    const rows = await this.campaignCacheRepository.getMatchIndex();
+    return {
+      rebuilt,
+      withEmbedding: rows.filter((r) => r.hasEmbedding).length,
+    };
+  }
+
   /** SCAN으로 campaign:* 키만 수집 (GET 없이) */
   private async scanKeys(): Promise<string[]> {
     const keys: string[] = [];

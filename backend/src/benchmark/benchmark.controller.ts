@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Query, Logger } from '@nestjs/common';
 import { Public } from '../auth/decorators/public.decorator';
 import {
   BenchmarkService,
@@ -97,6 +97,20 @@ export class BenchmarkController {
         message: `조회 비교 실패: ${errorMessage}`,
       };
     }
+  }
+
+  /**
+   * POST /benchmark/rebuild-index
+   * 매칭 인덱스(rtb:match-index)를 본문 기준으로 즉시 재구축 (ops 유틸).
+   */
+  @Public()
+  @Post('rebuild-index')
+  async rebuildMatchIndex(): Promise<{
+    success: boolean;
+    data: { rebuilt: number; withEmbedding: number };
+  }> {
+    const data = await this.benchmarkService.rebuildMatchIndex();
+    return { success: true, data };
   }
 
   /**
