@@ -57,6 +57,7 @@ export class TransformerMatcher extends Matcher {
     const allCampaigns = await this.campaignCacheRepo.getAllCampaigns();
 
     // 비딩 자격 필터링: ACTIVE + 날짜 범위 + deletedAt + embeddingTags + isHighIntent 존재
+    // TODO: 처음부터 모든 캠페인 조회 말고 이렇게 필터링된 캠페인만 Redis에서 조회하는 방법도 고려 가능 -> 인덱싱
     const eligibleCampaigns = this.filterEligibleCampaigns(
       allCampaigns,
       context.isHighIntent
