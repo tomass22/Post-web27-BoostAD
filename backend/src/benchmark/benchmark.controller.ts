@@ -4,6 +4,7 @@ import {
   BenchmarkService,
   BenchmarkSummary,
   FetchBenchmarkSummary,
+  SpentBenchmarkSummary,
 } from './benchmark.service';
 
 @Controller('benchmark')
@@ -93,6 +94,52 @@ export class BenchmarkController {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         data: null as any,
         message: `조회 비교 실패: ${errorMessage}`,
+      };
+    }
+  }
+
+  /**
+   * GET /benchmark/spent?concurrency=200&budgetAllows=50&cpc=1&latencyCalls=200
+   * spent 차감 비교: 원자적 예산 검증+증가의 단건 지연 & 동시성 정합성/처리량.
+   *   - mysql-atomic (조건부 단일 UPDATE) vs redis-lua (Lua 원자)
+   *   - mysql-naive(맹목 증가)는 동시성에서 오버스펜드 시연
+   * ⚠️ 실 캠페인 1개를 잠깐 변경 후 finally에서 원래 값으로 원복함.
+   */
+  @Public()
+  @Get('spent')
+  async runSpentBenchmark(
+    @Query('latencyCalls') latencyCalls?: string,
+    @Query('concurrency') concurrency?: string,
+    @Query('cpc') cpc?: string,
+    @Query('budgetAllows') budgetAllows?: string
+  ): Promise<{
+    success: boolean;
+    data: SpentBenchmarkSummary;
+    message: string;
+  }> {
+    const toNum = (s?: string) =>
+      s !== undefined && s !== '' ? parseInt(s, 10) : undefined;
+    try {
+      const result = await this.benchmarkService.runSpentBenchmark({
+        latencyCalls: toNum(latencyCalls),
+        concurrency: toNum(concurrency),
+        cpc: toNum(cpc),
+        budgetAllows: toNum(budgetAllows),
+      });
+      return {
+        success: true,
+        data: result,
+        message: '✅ spent 차감 벤치마크 완료',
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(`❌ spent 벤치마크 실패: ${errorMessage}`);
+      return {
+        success: false,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: null as any,
+        message: `spent 벤치마크 실패: ${errorMessage}`,
       };
     }
   }
