@@ -1,6 +1,7 @@
 import {
   CachedCampaign,
   CachedCampaignWithoutSpent,
+  CampaignMatchIndexRow,
 } from '../types/campaign.types';
 
 export abstract class CampaignCacheRepository {
@@ -48,8 +49,18 @@ export abstract class CampaignCacheRepository {
   abstract deleteCampaignCacheById(id: string): Promise<void>;
   abstract existsCampaignCacheById(id: string): Promise<boolean>;
 
-  // RTB 비딩용: 모든 캠페인 조회 (Redis에서)
+  // RTB 비딩용: 모든 캠페인 조회 (Redis에서) — 본문/임베딩 포함 무거운 전수 조회
+  // (rebuild·정산·fallback 용도. 입찰 hot path는 getMatchIndex 사용)
   abstract getAllCampaigns(): Promise<CachedCampaign[]>;
+
+  // RTB 비딩 hot path: 매칭 인덱스(Hash)를 1왕복(HGETALL)으로 조회 (경량)
+  abstract getMatchIndex(): Promise<CampaignMatchIndexRow[]>;
+
+  // 자격 통과 후보의 본문/임베딩만 단건들로 모아 조회 (pipeline GET)
+  abstract findManyByIds(ids: string[]): Promise<CachedCampaign[]>;
+
+  // 본문(getAllCampaigns) 기준으로 매칭 인덱스를 전체 재구축 (cron self-healing)
+  abstract rebuildMatchIndex(): Promise<number>;
 
   // 일일 예산 리셋용 (자정 정산)
   abstract resetDailySpentCache(id: string): Promise<void>;
