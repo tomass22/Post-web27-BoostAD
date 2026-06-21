@@ -26,6 +26,11 @@ export class TransformerScorer extends Scorer {
   private scoreCandidate(candidate: Candidate): Promise<ScoredCandidate> {
     const { campaign, similarity } = candidate;
 
+    // 매칭된 태그 계산 (현재 사용 안 함) 참고용으로 남겨둠
+    // const matchedTags = campaign.tags.filter((tag) =>
+    //   context.tags.includes(tag.name)
+    // );
+
     // 점수 계산: CPC * 0.3 + Similarity * 70
     const cpc = campaign.maxCpc;
     const cpcScore = cpc * this.CPC_WEIGHT;
