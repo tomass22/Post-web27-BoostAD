@@ -152,6 +152,42 @@ export interface SpentBenchmarkSummary {
   };
 }
 
+/** 조회 비용 분해: 임베딩 payload 전수 파싱이 진짜 병목인지 가르는 측정 */
+export interface ParseBenchmarkSummary {
+  timestamp: string;
+  iterations: number;
+  campaignCount: number;
+  /** JSON.GET이 반환한 문자열 바이트 합 (캠페인당 평균) */
+  bytesPerCampaign: {
+    full: number;
+    lean: number;
+    reductionPercent: string;
+  };
+  averages: {
+    /** 전체 JSON.GET + JSON.parse (= 현재 getAllCampaigns 경로) */
+    fullParseMs: number;
+    /** 전체 JSON.GET, parse 생략 (전송+서버직렬화만) */
+    fullNoParseMs: number;
+    /** 필터 필드만 JSON.GET + parse (임베딩 제외) */
+    leanParseMs: number;
+  };
+  breakdown: {
+    /** 순수 파싱 비중 ≈ fullParse - fullNoParse */
+    parseShareMs: number;
+    /** 임베딩 payload 제거 효과 ≈ fullParse - leanParse */
+    embeddingPayloadMs: number;
+    verdict: string;
+  };
+  raw: Array<{
+    iteration: number;
+    fullParseMs: number;
+    fullNoParseMs: number;
+    leanParseMs: number;
+    fullBytes: number;
+    leanBytes: number;
+  }>;
+}
+
 @Injectable()
 export class BenchmarkService {
   private readonly logger = new Logger(BenchmarkService.name);
@@ -681,6 +717,172 @@ export class BenchmarkService {
       });
     }
     return campaigns;
+  }
+
+  /** SCAN으로 campaign:* 키만 수집 (GET 없이) */
+  private async scanKeys(): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor = '0';
+    do {
+      const result = await this.ioredisClient.scan(
+        cursor,
+        'MATCH',
+        'campaign:*',
+        'COUNT',
+        100
+      );
+      cursor = result[0];
+      keys.push(...result[1]);
+    } while (cursor !== '0');
+    return keys;
+  }
+
+  /**
+   * 조회 비용 분해: "임베딩 태그까지 전수 파싱한 게 병목인가?"를 가른다.
+   * 같은 키 집합을 3가지로 측정한다.
+   *   ① full+parse   : JSON.GET(전체) + JSON.parse  (= 현재 경로)
+   *   ② full,noparse : JSON.GET(전체), parse 생략    (전송+서버 직렬화만)
+   *   ③ lean+parse   : JSON.GET(필터 필드만) + parse (임베딩 제외)
+   * + 반환 문자열 바이트(full vs lean)로 payload 크기를 직접 비교.
+   */
+  async runParseBenchmark(
+    iterations: number = 8
+  ): Promise<ParseBenchmarkSummary> {
+    // 필터에 실제로 쓰는 필드만 (임베딩 제외)
+    const LEAN_PATHS = [
+      '$.status',
+      '$.startDate',
+      '$.endDate',
+      '$.deletedAt',
+      '$.isHighIntent',
+    ];
+    const BATCH_SIZE = 200;
+
+    const getFull = async (keys: string[], parse: boolean): Promise<number> => {
+      let bytes = 0;
+      for (let i = 0; i < keys.length; i += BATCH_SIZE) {
+        const batch = keys.slice(i, i + BATCH_SIZE);
+        const pipeline = this.ioredisClient.pipeline();
+        batch.forEach((k) => pipeline.call('JSON.GET', k));
+        const results = await pipeline.exec();
+        if (!results) continue;
+        results.forEach(([err, res]) => {
+          if (!err && typeof res === 'string') {
+            bytes += res.length;
+            if (parse) {
+              try {
+                JSON.parse(res);
+              } catch {
+                // skip
+              }
+            }
+          }
+        });
+      }
+      return bytes;
+    };
+
+    const getLean = async (keys: string[]): Promise<number> => {
+      let bytes = 0;
+      for (let i = 0; i < keys.length; i += BATCH_SIZE) {
+        const batch = keys.slice(i, i + BATCH_SIZE);
+        const pipeline = this.ioredisClient.pipeline();
+        batch.forEach((k) => pipeline.call('JSON.GET', k, ...LEAN_PATHS));
+        const results = await pipeline.exec();
+        if (!results) continue;
+        results.forEach(([err, res]) => {
+          if (!err && typeof res === 'string') {
+            bytes += res.length;
+            try {
+              JSON.parse(res);
+            } catch {
+              // skip
+            }
+          }
+        });
+      }
+      return bytes;
+    };
+
+    // 워밍업
+    const warmKeys = await this.scanKeys();
+    await getFull(warmKeys, true);
+    await getLean(warmKeys);
+
+    const rows: ParseBenchmarkSummary['raw'] = [];
+    for (let i = 0; i < iterations; i++) {
+      const keys = await this.scanKeys();
+
+      const t1 = performance.now();
+      const fullBytes = await getFull(keys, true);
+      const fullParseMs = performance.now() - t1;
+
+      const t2 = performance.now();
+      await getFull(keys, false);
+      const fullNoParseMs = performance.now() - t2;
+
+      const t3 = performance.now();
+      const leanBytes = await getLean(keys);
+      const leanParseMs = performance.now() - t3;
+
+      rows.push({
+        iteration: i + 1,
+        fullParseMs: round(fullParseMs),
+        fullNoParseMs: round(fullNoParseMs),
+        leanParseMs: round(leanParseMs),
+        fullBytes,
+        leanBytes,
+      });
+    }
+
+    const n = rows.length || 1;
+    const avg = (k: 'fullParseMs' | 'fullNoParseMs' | 'leanParseMs') =>
+      round(rows.reduce((s, r) => s + r[k], 0) / n);
+    const count = (await this.scanKeys()).length;
+    const fullBytesAvg = Math.round(
+      rows.reduce((s, r) => s + r.fullBytes, 0) / n / (count || 1)
+    );
+    const leanBytesAvg = Math.round(
+      rows.reduce((s, r) => s + r.leanBytes, 0) / n / (count || 1)
+    );
+
+    const fullParse = avg('fullParseMs');
+    const fullNoParse = avg('fullNoParseMs');
+    const leanParse = avg('leanParseMs');
+    const parseShare = round(fullParse - fullNoParse);
+    const embeddingPayload = round(fullParse - leanParse);
+    const pct = (gain: number, base: number) =>
+      base > 0 ? `${((gain / base) * 100).toFixed(1)}%` : '0%';
+
+    this.logger.log(
+      `📊 파싱 분해 — full+parse=${fullParse}ms, full(noparse)=${fullNoParse}ms, lean+parse=${leanParse}ms / ` +
+        `bytes/캠페인 full=${fullBytesAvg} lean=${leanBytesAvg}`
+    );
+
+    return {
+      timestamp: new Date().toISOString(),
+      iterations,
+      campaignCount: count,
+      bytesPerCampaign: {
+        full: fullBytesAvg,
+        lean: leanBytesAvg,
+        reductionPercent: pct(fullBytesAvg - leanBytesAvg, fullBytesAvg),
+      },
+      averages: {
+        fullParseMs: fullParse,
+        fullNoParseMs: fullNoParse,
+        leanParseMs: leanParse,
+      },
+      breakdown: {
+        parseShareMs: parseShare,
+        embeddingPayloadMs: embeddingPayload,
+        verdict:
+          `임베딩 제외 시 ${pct(embeddingPayload, fullParse)} 감소(${embeddingPayload}ms). ` +
+          `순수 파싱 비중 ${pct(parseShare, fullParse)}(${parseShare}ms). ` +
+          `payload ${pct(fullBytesAvg - leanBytesAvg, fullBytesAvg)} 축소.`,
+      },
+      raw: rows,
+    };
   }
 
   // ===========================================================================

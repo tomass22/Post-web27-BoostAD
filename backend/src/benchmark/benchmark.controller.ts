@@ -5,6 +5,7 @@ import {
   BenchmarkSummary,
   FetchBenchmarkSummary,
   SpentBenchmarkSummary,
+  ParseBenchmarkSummary,
 } from './benchmark.service';
 
 @Controller('benchmark')
@@ -94,6 +95,41 @@ export class BenchmarkController {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         data: null as any,
         message: `조회 비교 실패: ${errorMessage}`,
+      };
+    }
+  }
+
+  /**
+   * GET /benchmark/parse?iterations=8
+   * 조회 비용 분해: 임베딩 태그 전수 파싱이 병목인지 확인
+   * (full+parse vs full,noparse vs lean+parse + payload 바이트)
+   */
+  @Public()
+  @Get('parse')
+  async runParseBenchmark(
+    @Query('iterations') iterations: string = '8'
+  ): Promise<{
+    success: boolean;
+    data: ParseBenchmarkSummary;
+    message: string;
+  }> {
+    const iterCount = Math.max(1, Math.min(30, parseInt(iterations, 10) || 8));
+    try {
+      const result = await this.benchmarkService.runParseBenchmark(iterCount);
+      return {
+        success: true,
+        data: result,
+        message: `✅ 파싱 분해 완료 (${iterCount}회)`,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(`❌ 파싱 분해 실패: ${errorMessage}`);
+      return {
+        success: false,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        data: null as any,
+        message: `파싱 분해 실패: ${errorMessage}`,
       };
     }
   }
